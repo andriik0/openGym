@@ -13,6 +13,7 @@
 import * as cfgStore from './config.js';
 import { adapterFor } from './adapters/index.js';
 import { buildPromptParts } from './core/prompt.js';
+import os from 'node:os';
 import { fetchFor } from './node-fetch.js';
 
 const INTERVAL_MS = 30 * 60000;
@@ -32,6 +33,11 @@ export async function warmOnce({ log = console, fetch: fetchImpl } = {}) {
   const adapter = adapterFor(cfg.provider);
   if (!adapter || adapter.spawns !== false) return { skipped: true };
   if (running) return { skipped: true };
+  // Same credential testRun uses: the bound profile's in instance mode. In per-profile mode
+  // there is no account to spend on a background ping, so there is nothing to warm.
+  const resolved = cfgStore.credentialFor(cfgStore.boundUidFor(cfg));
+  if (!resolved.ok) return { skipped: true };
+  const env = cfgStore.jobEnv(os.tmpdir(), resolved);
   running = true;
   try {
     for (const kind of KINDS) {
@@ -39,6 +45,7 @@ export async function warmOnce({ log = console, fetch: fetchImpl } = {}) {
       const t0 = Date.now();
       const r = await adapter.invoke({
         cfg,
+        env,
         system: parts.system,
         prompt: 'Reply with exactly {"coach_contract":1} and nothing else.',
         model: cfgStore.modelFor(cfg),
@@ -47,7 +54,8 @@ export async function warmOnce({ log = console, fetch: fetchImpl } = {}) {
       });
       const ms = Date.now() - t0;
       if (r.code !== 0) {
-        log.log(`coach warmup (${kind}): endpoint not reachable, will retry later`);
+        const why = String(r.stderr || '').trim().slice(0, 200);
+        log.log(`coach warmup (${kind}): endpoint not reachable${why ? ` (${why})` : ''}, will retry later`);
         return { ok: false };
       }
       // >5s means the prefix was actually (re)read — worth a line; a warm ping is noise.

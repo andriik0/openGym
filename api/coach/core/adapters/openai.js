@@ -35,7 +35,16 @@ export function chatCompletionsSpec(id, { maxTokensField = 'max_completion_token
     withoutJsonMode: body => (body.response_format && body.response_format.type === 'json_schema'
       ? { ...body, response_format: { type: 'json_object' } }
       : (() => { const { response_format: _rf, ...rest } = body; return rest; })()),
-    errorMessage: data => data && data.error && (typeof data.error === 'string' ? data.error : data.error.message),
+    // OpenRouter wraps an upstream rejection as a bare "Provider returned error"; the reason
+    // rides in error.metadata.raw (a string or an object), so surface it.
+    errorMessage: data => {
+      const e = data && data.error;
+      if (!e) return e;
+      if (typeof e === 'string') return e;
+      const raw = e.metadata && e.metadata.raw;
+      const extra = raw ? (typeof raw === 'string' ? raw : JSON.stringify(raw)) : '';
+      return extra ? `${e.message} — ${extra}` : e.message;
+    },
     readText: data => {
       const choice = (data.choices || [])[0];
       if (!choice) return { error: 'the answer had no choices' };
