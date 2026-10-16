@@ -9,12 +9,12 @@ process.env.DATA_DIR = DIR;
 fs.writeFileSync(path.join(DIR, 'secret'), 'x'.repeat(64));
 
 const cfgStore = await import('../coach/config.js');
-const { warmOnce } = await import('../coach/warmup.js');
+const { warmOnce, isLocalEndpoint } = await import('../coach/warmup.js');
 const { buildPromptParts } = await import('../coach/core/prompt.js');
 
 test('warmup pings the compatible endpoint once per chat kind, with the real rules prefix', async t => {
   cfgStore.reset();
-  cfgStore.save({ enabled: true, provider: 'compatible', models: { compatible: 'm1' }, providerOptions: { compatible: { baseUrl: 'http://ollama.test:11434' } } });
+  cfgStore.save({ enabled: true, provider: 'compatible', models: { compatible: 'm1' }, providerOptions: { compatible: { baseUrl: 'http://ollama:11434' } } });
   const seen = [];
   const fakeFetch = async (url, init) => {
     seen.push(JSON.parse(init.body));
@@ -33,4 +33,21 @@ test('warmup pings the compatible endpoint once per chat kind, with the real rul
 
   cfgStore.save({ provider: 'anthropic' });
   assert.equal((await warmOnce({ log: quiet, fetch: fakeFetch })).skipped, true, 'cloud providers are never pinged');
+});
+
+test('warmup never pings a metered gateway such as OpenRouter', async t => {
+  cfgStore.reset();
+  cfgStore.save({ enabled: true, provider: 'compatible', models: { compatible: 'm1' }, providerOptions: { compatible: { baseUrl: 'https://openrouter.ai/api' } } });
+  t.after(() => cfgStore.reset());
+  let calls = 0;
+  const r = await warmOnce({ log: { log() {} }, fetch: async () => { calls++; return new Response('{}'); } });
+  assert.equal(r.skipped, true);
+  assert.equal(calls, 0);
+});
+
+test('isLocalEndpoint', () => {
+  for (const u of ['http://localhost:11434', 'http://127.0.0.1:8080', 'http://192.168.1.50:11434', 'http://10.0.0.2', 'http://172.20.0.5', 'http://ollama:11434', 'http://box.lan', 'http://[::1]:11434'])
+    assert.equal(isLocalEndpoint(u), true, u);
+  for (const u of ['https://openrouter.ai/api', 'https://api.together.xyz', 'http://172.32.0.1', 'http://8.8.8.8', 'not a url'])
+    assert.equal(isLocalEndpoint(u), false, u);
 });

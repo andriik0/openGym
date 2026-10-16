@@ -9,8 +9,11 @@
  * boot and then again every half hour. A warm ping is nearly free (the prefix is cached, one
  * token comes back); a cold one does the expensive read exactly once, off anyone's clock.
  * Cloud providers are never pinged — their caches are their problem, and requests cost money.
+ * That includes "compatible" endpoints that are really a metered cloud gateway (OpenRouter and
+ * the like): only an endpoint that looks self-hosted is warmed. COACH_WARMUP=on/off overrides.
  */
 import * as cfgStore from './config.js';
+import { baseUrlFor } from './core/providers.js';
 import { adapterFor } from './adapters/index.js';
 import { buildPromptParts } from './core/prompt.js';
 import os from 'node:os';
@@ -27,9 +30,33 @@ const KINDS = ['debrief', 'review'];
 
 let running = false;
 
+/** A self-hosted server is on this machine or this network: loopback, a private address, a bare
+ *  service name (`ollama`), or a conventional local suffix. A public FQDN is assumed metered. */
+export function isLocalEndpoint(baseUrl) {
+  let host;
+  try { host = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return false; }
+  if (!host) return false;
+  if (host === 'localhost' || host === '::1' || host.startsWith('fe80:') || /^f[cd][0-9a-f]{2}:/.test(host)) return true;
+  const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(host);
+  if (v4) {
+    const [a, b] = [+v4[1], +v4[2]];
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  if (!host.includes('.')) return true;
+  return /\.(local|lan|internal|home\.arpa)$/.test(host);
+}
+
+function warmupAllowed(cfg) {
+  const flag = String(process.env.COACH_WARMUP || '').toLowerCase();
+  if (flag === 'off') return false;
+  if (flag === 'on') return true;
+  return isLocalEndpoint(baseUrlFor(cfg.provider, cfg));
+}
+
 export async function warmOnce({ log = console, fetch: fetchImpl } = {}) {
   const cfg = cfgStore.load();
   if (!cfgStore.isEnabled() || cfg.provider !== 'compatible') return { skipped: true };
+  if (!warmupAllowed(cfg)) return { skipped: true };
   const adapter = adapterFor(cfg.provider);
   if (!adapter || adapter.spawns !== false) return { skipped: true };
   if (running) return { skipped: true };
